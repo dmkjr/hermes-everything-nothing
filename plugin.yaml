@@ -1,0 +1,18 @@
+name: everything-nothing
+version: "1.0.0"
+manifest_version: 2
+api_version: 1
+description: Reusable templates, frontend design briefs, and concise replies for Hermes.
+author: dmkjr
+license: MIT
+homepage: https://github.com/dmkjr/hermes-everything-nothing
+requires_hermes: ">=0.23.0"
+tags: [desktop, productivity, templates, design]
+provides_hooks: [pre_llm_call]
+provides_tools: []
+config_schema:
+  response_concision:
+    type: string
+    default: "Off"
+    choices: ["Off", Light, Terse, Fluff Eater]
+    description: "Fluff Eater reply style for interactive Desktop and terminal chats."
