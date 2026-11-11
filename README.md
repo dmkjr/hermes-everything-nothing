@@ -1,184 +1,78 @@
-# Next Prompt
+# Everything Nothing for Hermes
 
-A [Hermes Agent](https://github.com/NousResearch/hermes-agent) Desktop plugin
-that suggests your next message after every turn. It shows up as a small pill
-under the composer:
+![Hermes Everything Nothing](docs/media/everything-nothing-hero.png)
 
-- **When the agent asks you something**, the pill is the answer you would most
-  likely give, committed to one option.
-- **Otherwise**, it is the natural next step: verify it, apply it elsewhere,
-  dig into a detail.
+Next Prompt is the first feature in Everything Nothing. Its installed ID and
+auxiliary model slot stay compatible with existing Hermes settings.
 
-Click it, or press **Ctrl/⌘+Shift+Y**, and the text lands in the composer for
-you to review. **Nothing is sent unless you ⌘/Ctrl-click the pill.**
+Next Prompt shows an editable reply preview in an empty Hermes Desktop composer.
+Press **Right Arrow** to accept it into the draft. For a choice with multiple
+options, press **Option+Left/Right** (Alt+Left/Right) to cycle before accepting.
+Open the command palette to use or dismiss the current suggestion.
 
-## Install
+## Settings and diagnostics
 
-```bash
-hermes plugins install next-prompt
-hermes plugins enable next-prompt
-```
+Open **Settings → Plugins → Everything Nothing** for the active Hermes profile.
+Turn off **Offer extra follow-up choices** to keep a single follow-up when
+Hermes has not offered explicit choices. Selecting text in the composer or
+editing and clearing the draft returns a cycled preview to the first option.
 
-Restart Hermes Desktop, then turn **Next Prompt** on in **Settings → Plugins**
-(desktop plugins are opt-in). Requires Hermes Agent ≥ 0.21 with the Desktop app.
+**Test Suggestion** runs a synthetic tea-or-coffee example on that profile.
+It shows the actual provider and model when a model returns, plus the backend
+elapsed time. Enable **Force offline fallback for this test** to bypass the
+model call for just that run. The diagnostic does not modify the pending
+suggestion store, chat history, or model settings.
 
-## What it looks like
+## How suggestions work
 
-**The agent asked a question.** The pill is your likely answer, ready to send
-or tweak:
+The plugin extracts explicit choices from the assistant’s final message.
+It constructs the replies itself and asks the configured model to rank them by
+number. For other turns the model selects from a short list of follow-up
+questions, or returns no suggestion. Model-generated prose cannot become a
+draft. Quoted choice labels are framed as preferences, including when they
+describe past actions.
 
-![The agent asks whether dark mode should follow the OS or use a toggle; the pill answers "Go with the toggle (light/dark/system), start on system."](docs/media/likely-answer.png)
+The dependency-free local fallback offers detected choices in their original
+order or a clarification for a question if the model call fails. It runs on
+the Hermes backend and needs no model weights, network, or separate process.
+Set `plugins.entries.next-prompt.settings.local_fallback` to false to disable
+the fallback on model failure. Choice detection and follow-up templates are
+currently English-oriented. The parser handles up to four explicit options.
 
-**The agent finished a task.** The pill is the natural next step:
+## Choose the suggestion model
 
-![After a palindrome function, the pill suggests "Add a quick unit test using Python's unittest module for these cases"](docs/media/next-step.png)
+In Hermes Desktop, open **Settings → Models → Auxiliary → Next Prompt** for
+the profile that runs the chat. Select a configured provider and model.
+A local model already connected to that Hermes profile is available through
+its configured provider. The default follows the main chat model.
+You can also use `hermes model` → **Auxiliary** → **Next Prompt** or set
+`auxiliary.next_prompt.provider` and `auxiliary.next_prompt.model` in that
+profile's config. No separate plugin credentials are needed.
 
-**Command palette.** Ctrl/⌘+K → *Next Prompt: use suggestion* (with a preview)
-or *dismiss suggestion*:
+## Deployment
 
-![The command palette filtered to Next Prompt, showing "use suggestion" with a preview and the Ctrl+Shift+Y shortcut, and "dismiss suggestion"](docs/media/command-palette.png)
+This fork retains the `next-prompt` plugin ID and the existing authenticated
+REST route. Install the fork backend in the profile that runs chat turns
+and its desktop bundle on the machine running Desktop. If the two are on
+different machines, update both. Use a pinned revision of the fork when
+distributing it. On Mac-2, the existing standalone desktop override must be
+updated explicitly. A stock catalog update does not manage that override.
 
-## Using it
+Reload the backend processes that run turns and serve plugin routes after
+updating Python, then use **Reload desktop plugins** in Desktop. The database
+upgrade adds one optional column and preserves existing rows. The fork
+desktop suppresses pending replies produced by the old unrestricted generator.
+Older desktops can still read the first suggestion from the fork backend.
 
-- **Click the pill** or press **Ctrl/⌘+Shift+Y** to use the suggestion. The
-  shortcut only acts on the suggestion shown in the chat you are looking at,
-  and does nothing while that chat is working. Change it in
-  **Settings → Keybinds**.
-- **⌘-click (Ctrl-click on Linux/Windows)** the pill to send the suggestion
-  right away instead of reviewing it first. A plain click, the keybind and the
-  palette command still only fill the composer; nothing is sent unless you
-  hold the modifier. If the host cannot submit, it falls back to filling the
-  composer.
-- **Click ×** to dismiss it. Sending your own message clears it too.
-- **It stays until you act on it.** Switching chats or screens, or restarting
-  the backend, does not lose it. Stale suggestions expire after 7 days.
-- **When a suggestion can't be generated**, a muted note takes the pill's
-  place and says why (credentials rejected, rate limit, timeout) with a hint
-  on hover. It never shows the provider's error text.
-
-On Desktop builds with the plugin SDK's composer API
-(`host.composer.insertText`), using a suggestion puts the text straight into
-the composer. On earlier builds it copies the text to the clipboard and tells
-you so; paste it with Ctrl/⌘+V.
-
-## Choosing the model
-
-Suggestions run on your **main model** unless you give the plugin's auxiliary
-task its own. A small, fast model is plenty and far cheaper than an Opus-class
-main model:
-
-```bash
-hermes config set auxiliary.next_prompt.provider anthropic
-hermes config set auxiliary.next_prompt.model claude-sonnet-5
-```
-
-`hermes config set` warns that the key is not recognized: plugin tasks are
-registered at runtime, and the value is still read. You can also pick it
-interactively with `hermes model` → **Auxiliary** → **Next Prompt**. (Desktop's
-Settings → Models → Auxiliary lists only Hermes' built-in tasks.) The change
-applies from the next suggestion; no restart needed.
-
-Measured on 16 conversations in English and Spanish (6 where a next step fits,
-8 where the agent asked you something, 2 where the right answer is silence; 4
-of them real exchanges scored against the reply actually sent), each run two
-or three times and scored by an LLM judge:
-
-| Model | Correct | Median latency | Notes |
-|---|---|---|---|
-| `claude-opus-5-5` | 30/32 | 1.5 s | Most useful suggestions; the most expensive |
-| `claude-sonnet-5` | 43/48 | 1.2 s | Recommended balance |
-| `gpt-6-luna` (reasoning off) | 25/32 | 1.8 s | Much cheaper; sometimes follows the topic's language instead of yours, or stays silent when a reply fits |
-
-"Correct" means you would send it as is or after changing a word or two, in
-your language, committed to one answer (no options or blanks), with silence
-exactly where it should be. The miss all three share: when you report on a
-test, the suggestion assumes it went well, so you fix a word when it didn't.
-
-### Settings
-
-```yaml
-plugins:
-  entries:
-    next-prompt:
-      settings:
-        enabled: true            # toggle suggestions on/off
-        max_context_messages: 4  # your last N/2 requests + the agent's reply to each (2-10)
-        cooldown_seconds: 3      # minimum gap between suggestions per chat
-```
-
-## Privacy and cost
-
-- Per completed turn, the model receives your last few requests and the
-  agent's **final** reply to each (2 of each by default), each clipped to
-  about 1,200 characters keeping the start and the end. Tool calls, tool
-  output and the agent's intermediate notes are never sent.
-- One short completion per turn (`max_tokens=100`, about 900 input tokens with
-  Anthropic models), on the model you choose.
-- Messaging platforms (Telegram, Discord, …) are skipped: nobody would see the
-  pill there, so no call is spent on them.
-- No telemetry and no network access other than the host's own `ctx.llm` call.
-
-## How it works
-
-1. **`post_llm_call` hook.** When a turn finishes in a Desktop/TUI session, a
-   background worker asks `ctx.llm` for the message you are most likely to
-   send next: your answer when the agent asked you something, otherwise a
-   next step. `NULL` only when the exchange is closed (thanks, goodbye).
-2. **Per-chat storage.** The suggestion is kept in a small SQLite file in
-   the plugin's data directory (`plugin-data/next-prompt/suggestions.db` in
-   the profile) until you use it, dismiss it, or send your own message
-   (`pre_llm_call`). The hook and the REST route may run in different
-   processes (a gateway serving several profiles runs a secondary profile's
-   plugin API in that profile's plugin host), so this file is the only state
-   they share.
-3. **Desktop half.** Reads the suggestion through the plugin's REST route
-   (`ctx.rest` → `/api/plugins/next-prompt/suggestion`) and renders it in the
-   `composer.underside` area.
-
-### Design notes
-
-- **Pill, not ghost text.** The plugin SDK does not expose the composer's
-  input, so the suggestion lives in `composer.underside`, a first-class
-  extension area.
-- **Insert, don't send.** Using a suggestion only places the text for you to
-  review. The bundle stays inside the plugin SDK: it never touches the app's
-  composer DOM or internal events, so composer changes can't break it
-  silently.
-- **Poll, not push.** `ctx.socket` is a no-op on OAuth remote backends, so the
-  desktop half polls (every 2 s right after a turn, every 20 s otherwise).
-- **One answer, never a menu.** When the agent ends with a question, a choice
-  or a yes/no offer, the suggestion commits to the option the conversation or
-  the agent favours, or says yes to a proposal that matches your request.
-  Asked to try something and report back, it confirms you did it with the
-  most likely outcome. It never offers a list of options or a blank to fill
-  in, since deleting options is as much work as typing; a suggestion that
-  comes back with brackets anyway is dropped. When the answer is a detail only
-  you know (an email address), it shows nothing. It never includes a password.
-- **Your language.** The suggestion follows the language of your last
-  message, not the topic's.
+The preview uses Hermes Desktop's composer markup, since the SDK does not
+provide an inline preview slot. Insertion uses the SDK's composer API. This
+local integration may need adjustment if Hermes changes its composer markup.
 
 ## Development
 
-```bash
-git clone https://github.com/soymarketing/hermes-plugin-next-prompt
-cd hermes-plugin-next-prompt
-hermes plugins validate .
-
-# tests (need hermes-agent importable, e.g. its venv, and Node 22+)
-python -m unittest discover -s tests -v
-node --test "tests/frontend/*.test.mjs"
-node tests/check_sdk_exports.mjs /path/to/hermes-agent
-
-# try it
-cp -r . "$HERMES_HOME/plugins/next-prompt"
-hermes plugins enable next-prompt
+```sh
+python -m unittest discover -s tests -p 'test_backend.py'
+node --test tests/frontend/plugin.test.mjs
 ```
 
-The same checks run in GitHub Actions on every push and pull request. Python
-changes need a full Desktop restart (quit it from the system tray too);
-`desktop/plugin.js` hot-reloads. See [CHANGELOG.md](CHANGELOG.md) for release
-notes.
-
-## License
-
-MIT
+MIT. Forked from [soymarketing/hermes-plugin-next-prompt](https://github.com/soymarketing/hermes-plugin-next-prompt).

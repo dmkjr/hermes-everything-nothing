@@ -1,8 +1,8 @@
 name: next-prompt
-version: 0.3.2
+version: 0.5.0
 manifest_version: 2
 api_version: 1
-description: AI-generated follow-up prompt suggestions under the Desktop composer after each turn.
+description: Inline Desktop reply suggestions with safe choice cycling.
 author: soymarketing
 license: MIT
 homepage: https://github.com/soymarketing/hermes-plugin-next-prompt
@@ -25,3 +25,19 @@ config_schema:
     type: int
     default: 3
     description: "Minimum seconds between suggestions to avoid spamming"
+  local_fallback:
+    type: bool
+    default: true
+    description: "Offer detected choices or a clarification when the suggestion model fails"
+  offer_follow_up_options:
+    type: bool
+    default: true
+    description: "Offer multiple follow-up questions when Hermes did not offer choices"
+  local_explicit_choices:
+    type: bool
+    default: false
+    description: "Show choices already offered by Hermes without an extra model call"
+  response_concision:
+    type: int
+    default: 0
+    description: "Reply style for interactive chats (0 off, 1 light, 2 terse, 3 Fluff Eater)"

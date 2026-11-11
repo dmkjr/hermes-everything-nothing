@@ -15,7 +15,9 @@ could not be generated. Both halves load this file by path (the host imports
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS pending (
     kind       TEXT NOT NULL,
     text       TEXT,
     failure    TEXT,
-    timestamp  REAL NOT NULL
+    timestamp  REAL NOT NULL,
+    alternatives TEXT
 )
 """
 
@@ -55,9 +58,16 @@ def data_dir() -> Optional[Path]:
     try:
         if plugin_data_dir is not None:
             return plugin_data_dir(PLUGIN_NAME)
-        from hermes_constants import get_hermes_home
-
-        path = get_hermes_home() / "plugin-data" / PLUGIN_NAME
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        except Exception:
+            # Bare hosts/tests: fall back to the HERMES_HOME env var.
+            env_home = os.environ.get("HERMES_HOME")
+            if not env_home:
+                raise
+            home = Path(env_home)
+        path = home / "plugin-data" / PLUGIN_NAME
         path.mkdir(parents=True, exist_ok=True)
         return path
     except Exception as exc:
@@ -80,13 +90,19 @@ def _connect() -> Optional[sqlite3.Connection]:
             conn = sqlite3.connect(str(directory / DB_FILE), timeout=5.0, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_SCHEMA)
+        if "alternatives" not in {row[1] for row in conn.execute("PRAGMA table_info(pending)")}:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if "alternatives" not in {row[1] for row in conn.execute("PRAGMA table_info(pending)")}:
+                    conn.execute("ALTER TABLE pending ADD COLUMN alternatives TEXT")
         return conn
     except Exception as exc:
         logger.warning("next-prompt: could not open %s: %s", DB_FILE, exc)
         return None
 
 
-def _write(session_id: str, kind: str, text: Optional[str], failure: Optional[str]) -> Optional[float]:
+def _write(session_id: str, kind: str, text: Optional[str], failure: Optional[str],
+           alternatives: Optional[str] = None) -> Optional[float]:
     conn = _connect()
     if conn is None:
         return None
@@ -94,8 +110,8 @@ def _write(session_id: str, kind: str, text: Optional[str], failure: Optional[st
     try:
         with closing(conn), conn:
             conn.execute(
-                "INSERT OR REPLACE INTO pending (session_id, kind, text, failure, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (session_id, kind, text, failure, now),
+                "INSERT OR REPLACE INTO pending (session_id, kind, text, failure, timestamp, alternatives) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, kind, text, failure, now, alternatives),
             )
             conn.execute(
                 "DELETE FROM pending WHERE (kind = 'suggestion' AND timestamp < ?) OR (kind != 'suggestion' AND timestamp < ?)",
@@ -112,9 +128,9 @@ def _write(session_id: str, kind: str, text: Optional[str], failure: Optional[st
     return now
 
 
-def put_suggestion(session_id: str, text: str) -> Optional[Dict[str, Any]]:
+def put_suggestion(session_id: str, text: str, alternatives: Optional[list[str]] = None) -> Optional[Dict[str, Any]]:
     """Store the session's pending suggestion, replacing whatever it had."""
-    timestamp = _write(session_id, "suggestion", text, None)
+    timestamp = _write(session_id, "suggestion", text, None, json.dumps(alternatives) if alternatives is not None else None)
     if timestamp is None:
         return None
     return {"text": text, "session_id": session_id, "timestamp": timestamp}
@@ -148,17 +164,20 @@ def get(session_id: str) -> Dict[str, Optional[Dict[str, Any]]]:
     try:
         with closing(conn):
             row = conn.execute(
-                "SELECT kind, text, failure, timestamp FROM pending WHERE session_id = ?", (session_id,)
+                "SELECT kind, text, failure, timestamp, alternatives FROM pending WHERE session_id = ?", (session_id,)
             ).fetchone()
     except sqlite3.Error as exc:
         logger.warning("next-prompt: could not read %s: %s", session_id, exc)
         return empty
     if not row:
         return empty
-    kind, text, failure, timestamp = row
+    kind, text, failure, timestamp, alternatives = row
     age = time.time() - float(timestamp or 0)
     if kind == "suggestion" and text and age < SUGGESTION_TTL_SECONDS:
-        return {"suggestion": {"text": text, "session_id": session_id, "timestamp": timestamp}, "error": None}
+        suggestion = {"text": text, "session_id": session_id, "timestamp": timestamp}
+        if alternatives is not None:
+            suggestion["alternatives"] = json.loads(alternatives)
+        return {"suggestion": suggestion, "error": None}
     if kind == "failure" and failure and age < FAILURE_TTL_SECONDS:
         return {"suggestion": None, "error": {"kind": failure, "session_id": session_id, "timestamp": timestamp}}
     return empty
@@ -207,3 +226,41 @@ def import_legacy(entries: Dict[str, Any]) -> int:
     except sqlite3.Error as exc:
         logger.warning("next-prompt: could not import saved suggestions: %s", exc)
         return 0
+
+
+_COMPACTION_SCHEMA = """CREATE TABLE IF NOT EXISTS compaction_totals (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    runs INTEGER NOT NULL,
+    measured INTEGER NOT NULL,
+    reclaimed INTEGER NOT NULL,
+    proactive INTEGER NOT NULL
+)"""
+
+
+def record_compaction(reclaimed: Optional[int], *, proactive: bool) -> None:
+    conn = _connect()
+    if conn is None:
+        return
+    try:
+        with closing(conn), conn:
+            conn.execute(_COMPACTION_SCHEMA)
+            conn.execute(
+                """INSERT INTO compaction_totals VALUES (1, 1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    runs = runs + 1, measured = measured + excluded.measured,
+                    reclaimed = reclaimed + excluded.reclaimed,
+                    proactive = proactive + excluded.proactive""",
+                (int(reclaimed is not None), reclaimed or 0, int(proactive)),
+            )
+    except sqlite3.Error:
+        logger.debug("next-prompt: compaction metrics could not be saved", exc_info=True)
+
+
+def compaction_totals() -> Dict[str, int]:
+    conn = _connect()
+    if conn is None:
+        return {}
+    with closing(conn):
+        conn.execute(_COMPACTION_SCHEMA)
+        row = conn.execute("SELECT runs, measured, reclaimed, proactive FROM compaction_totals WHERE id = 1").fetchone()
+    return dict(zip(("runs", "measured", "reclaimed", "proactive"), row or (0, 0, 0, 0)))

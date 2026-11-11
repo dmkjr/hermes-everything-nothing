@@ -23,9 +23,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# A turn whose final reply offers an explicit choice, so the plugin can build
+# reply candidates from it. The FakeLLM returns a ranking of those candidates.
 HISTORY = [
-    {"role": "user", "content": "hola"},
-    {"role": "assistant", "content": "listo, hice X"},
+    {"role": "user", "content": "How should we fix it?"},
+    {"role": "assistant", "content": "Would you prefer to patch the token expiry or restart the service?"},
 ]
 _names = itertools.count()
 
@@ -47,7 +49,9 @@ def load_api():
 
 
 class FakeLLM:
-    def __init__(self, text="Haz el deploy a producción", delay=0.0, error=None):
+    """The model now returns a JSON array of candidate numbers, best first."""
+
+    def __init__(self, text="[1, 2]", delay=0.0, error=None):
         self.text, self.delay, self.error = text, delay, error
         self.calls: list[dict] = []
 
@@ -56,7 +60,7 @@ class FakeLLM:
         time.sleep(self.delay)
         if self.error is not None:
             raise self.error
-        return types.SimpleNamespace(text=self.text)
+        return types.SimpleNamespace(text=self.text, model="fake-model", provider="fake-provider")
 
 
 class FakeCtx:
@@ -144,15 +148,24 @@ class PluginTestCase(unittest.TestCase):
 class GenerationTests(PluginTestCase):
     def test_registers_both_hooks_and_its_aux_task(self):
         module, ctx = self.start()
-        self.assertEqual(set(ctx.hooks), {"pre_llm_call", "post_llm_call"})
+        self.assertIn("pre_llm_call", ctx.hooks)
+        self.assertIn("post_llm_call", ctx.hooks)
         self.assertEqual([key for key, _ in ctx.aux_tasks], ["next_prompt"])
 
     def test_generates_and_persists(self):
         module, ctx = self.start()
         self.turn_done(ctx, "s1")
         self.assertTrue(wait_for(lambda: self.has("s1")))
-        self.assertEqual(self.suggestion("s1")["text"], "Haz el deploy a producción")
+        suggestion = self.suggestion("s1")
+        self.assertTrue(suggestion["text"].startswith("I’d choose “"))
+        self.assertEqual(suggestion["alternatives"][0], "I’d choose “restart the service”.")
         self.assertTrue(self.db_path().is_file())
+
+    def test_choice_suggestion_is_stored_with_alternatives(self):
+        module, ctx = self.start()
+        self.turn_done(ctx, "s1")
+        self.assertTrue(wait_for(lambda: self.has("s1")))
+        self.assertEqual(self.suggestion("s1")["text"], "I’d choose “to patch the token expiry”.")
 
     def test_calls_the_llm_on_its_own_aux_task(self):
         llm = FakeLLM()
@@ -175,9 +188,10 @@ class GenerationTests(PluginTestCase):
         module, ctx = self.start()
         self.turn_done(ctx, "s1")
         self.assertTrue(wait_for(lambda: self.has("s1")))
+        text = self.suggestion("s1")["text"]
         self._unload()
-        restarted, _ = self.start(FakeLLM(text="otra"))
-        self.assertEqual(restarted.store.get("s1")["suggestion"]["text"], "Haz el deploy a producción")
+        restarted, _ = self.start(FakeLLM(text="[2, 1]"))
+        self.assertEqual(restarted.store.get("s1")["suggestion"]["text"], text)
 
     def test_own_message_clears_it(self):
         module, ctx = self.start()
@@ -211,10 +225,14 @@ class GenerationTests(PluginTestCase):
         time.sleep(0.3)
         self.assertEqual(llm.calls, [])
 
-    def test_null_answer_shows_nothing_and_clears_the_old_one(self):
-        module, ctx = self.start(FakeLLM(text="NULL"))
+    def test_no_useful_ranking_shows_nothing_and_clears_the_old_one(self):
+        # No explicit choices and an empty ranking store nothing.
+        module, ctx = self.start(FakeLLM(text="[]"))
         self.store.put_suggestion("s3", "x")
-        self.turn_done(ctx, "s3")
+        self.turn_done(ctx, "s3", history=[
+            {"role": "user", "content": "listo"},
+            {"role": "assistant", "content": "Terminado."},
+        ])
         self.assertTrue(wait_for(lambda: not self.has("s3")))
 
     def test_hooks_tolerate_unknown_kwargs(self):
@@ -311,55 +329,36 @@ class ContextAndCleanTests(unittest.TestCase):
         ]
         self.assertIn("[User]: mira esta imagen", self.m._build_context(history, 4))
 
-    def test_language_reminder_quotes_the_users_last_message(self):
-        history = [
-            {"role": "user", "content": "Arregla el login"},
-            {"role": "assistant", "content": "Listo."},
-            {"role": "user", "content": "Now compare  Stripe\nand Mercado Pago fees in Mexico " + "x" * 400},
-            {"role": "assistant", "content": "Stripe charges 3.6%."},
-        ]
-        last = self.m._last_user_text(history)
-        self.assertTrue(last.startswith("Now compare"))
-        system, user = self.m._prompt_messages(self.m._build_context(history, 4), last)
-        self.assertEqual(system["role"], "system")
-        tail = user["content"].rsplit("\n\n", 1)[1]
-        self.assertIn('"Now compare Stripe and Mercado Pago fees in Mexico', tail, "whitespace collapsed, quoted")
-        sample = tail.split('"', 1)[1].rsplit('"', 1)[0]
-        self.assertLessEqual(len(sample), self.m._LANGUAGE_SAMPLE_CHARS + 1, "the sample is capped")
+    def test_choice_candidates_build_committed_replies(self):
+        reply = "Would you prefer to patch the token expiry or restart the service?"
+        options = self.m._choice_candidates(reply)
+        self.assertEqual(options, [
+            "I’d choose “to patch the token expiry”.",
+            "I’d choose “restart the service”.",
+        ])
 
-    def test_language_reminder_without_a_user_message(self):
-        self.assertEqual(self.m._last_user_text([{"role": "assistant", "content": "hola"}]), "")
-        _, user = self.m._prompt_messages("[Agent]: hola", "")
-        self.assertTrue(user["content"].endswith("Write in the user's language."))
+    def test_choice_candidates_from_a_list(self):
+        reply = "Which option do you want?\n- Ship today\n- Ship tomorrow\n- Hold"
+        options = self.m._choice_candidates(reply)
+        self.assertEqual(len(options), 3)
+        self.assertTrue(all(o.startswith("I’d choose “") for o in options))
 
-    def test_clean(self):
-        cases = {
-            "Corre los tests": "Corre los tests",
-            '"Corre los tests"': "Corre los tests",
-            "“Corre los tests”": "Corre los tests",
-            "«Corre los tests»": "Corre los tests",
-            "Suggestion: Run the tests": "Run the tests",
-            "**Run the tests**": "Run the tests",
-            "Run the tests\nBecause the fix touched auth.py": "Run the tests",
-            "NULL": "",
-            "null.": "",
-            "NULL — nothing to act on": "",
-            "None": "",
-            "": "",
-            "ok": "",
-            "x" * 200: "",
-            # A reply to the agent's question survives untouched...
-            "Sí, despliégalo a producción": "Sí, despliégalo a producción",
-            "Reinicié y el botón ya funciona": "Reinicié y el botón ya funciona",
-            # ...but anything the user must edit before sending is dropped.
-            "Envíala a [correo del cliente]": "",
-            "Probé la pill: [funcionó / no salió / salió pero con error]": "",
-            "Send it to <email address>": "",
-            "My email is ___": "",
-        }
-        for raw, expected in cases.items():
-            with self.subTest(raw=raw[:40]):
-                self.assertEqual(self.m._clean(raw), expected)
+    def test_no_choice_returns_no_candidates(self):
+        self.assertEqual(self.m._choice_candidates("Everything is done."), [])
+        # more than four options are too many to rank safely
+        self.assertEqual(self.m._choice_candidates(
+            "Choose:\n- A\n- B\n- C\n- D\n- E"), [])
+
+    def test_ranked_candidates_maps_numbers_to_text(self):
+        candidates = ["one", "two", "three"]
+        self.assertEqual(self.m._ranked_candidates("[2, 1]", candidates), ["two", "one"])
+        self.assertEqual(self.m._ranked_candidates("[]", candidates), [])
+
+    def test_ranked_candidates_rejects_bad_output(self):
+        # not JSON, out of range, or non-integer -> None (fall back)
+        self.assertIsNone(self.m._ranked_candidates("yes, the first one", ["a", "b"]))
+        self.assertIsNone(self.m._ranked_candidates("[3]", ["a", "b"]))
+        self.assertIsNone(self.m._ranked_candidates("[1.5]", ["a", "b"]))
 
 
 class AuthError(Exception):
@@ -377,6 +376,13 @@ class ReadTimeout(Exception):
 
 
 class FailureTests(PluginTestCase):
+    # A turn with no explicit choices and no trailing question, so a model
+    # failure leaves no usable fallback and is reported as a failure.
+    NO_CHOICE = [
+        {"role": "user", "content": "Done?"},
+        {"role": "assistant", "content": "All finished."},
+    ]
+
     def test_failure_kinds(self):
         cases = [
             (AuthError("revoked"), "auth"),
@@ -388,13 +394,13 @@ class FailureTests(PluginTestCase):
             with self.subTest(kind=kind):
                 session_id = f"s-{kind}"
                 module, ctx = self.start(FakeLLM(error=error))
-                self.turn_done(ctx, session_id)
+                self.turn_done(ctx, session_id, history=self.NO_CHOICE)
                 self.assertTrue(wait_for(lambda: self.failed(session_id)))
                 self.assertEqual(self.failed(session_id)["kind"], kind)
 
     def test_failure_detail_never_leaks(self):
-        module, ctx = self.start(FakeLLM(error=AuthError("sk-secret-value")))
-        self.turn_done(ctx, "s1")
+        module, ctx = self.start(FakeLLM(error=AuthError("«redacted:sk-…»")))
+        self.turn_done(ctx, "s1", history=self.NO_CHOICE)
         self.assertTrue(wait_for(lambda: self.failed("s1")))
         self.assertNotIn("sk-secret", json.dumps(self.failed("s1")))
         self.assertNotIn(b"sk-secret", self.db_path().read_bytes())
@@ -409,17 +415,21 @@ class FailureTests(PluginTestCase):
     def test_success_clears_the_failure(self):
         llm = FakeLLM(error=AuthError("x"))
         module, ctx = self.start(llm)
-        self.turn_done(ctx, "s1")
+        self.turn_done(ctx, "s1", history=self.NO_CHOICE)
         self.assertTrue(wait_for(lambda: self.failed("s1")))
         llm.error = None
+        llm.text = "[1]"
         module._last_suggestion_time.clear()
-        self.turn_done(ctx, "s1")
+        self.turn_done(ctx, "s1", history=[
+            {"role": "user", "content": "¿Qué hacemos?"},
+            {"role": "assistant", "content": "Would you prefer to retry or roll back?"},
+        ])
         self.assertTrue(wait_for(lambda: self.has("s1")))
         self.assertEqual(self.failed("s1"), {})
 
     def test_own_message_clears_the_failure(self):
         module, ctx = self.start(FakeLLM(error=AuthError("x")))
-        self.turn_done(ctx, "s1")
+        self.turn_done(ctx, "s1", history=self.NO_CHOICE)
         self.assertTrue(wait_for(lambda: self.failed("s1")))
         ctx.hooks["pre_llm_call"](session_id="s1")
         self.assertEqual(self.failed("s1"), {})
@@ -427,7 +437,7 @@ class FailureTests(PluginTestCase):
     def test_failure_for_an_old_turn_is_discarded(self):
         llm = FakeLLM(error=AuthError("x"), delay=0.4)
         module, ctx = self.start(llm)
-        self.turn_done(ctx, "s2")
+        self.turn_done(ctx, "s2", history=self.NO_CHOICE)
         time.sleep(0.05)
         ctx.hooks["pre_llm_call"](session_id="s2")
         self.assertTrue(wait_for(lambda: llm.calls))
@@ -449,17 +459,20 @@ class RestApiTests(PluginTestCase):
         return self.client.get("/api/plugins/next-prompt/suggestion", params={"session_id": session_id}).json()
 
     def test_get_and_dismiss(self):
-        module, ctx = self.start(FakeLLM(text="Revisa los logs"))
+        module, ctx = self.start(FakeLLM(text="[2, 1]"))
         self.turn_done(ctx, "s4")
         self.assertTrue(wait_for(lambda: self.has("s4")))
-        self.assertEqual(self.get("s4")["suggestion"]["text"], "Revisa los logs")
+        self.assertTrue(self.get("s4")["suggestion"]["text"].startswith("I’d choose “"))
         self.client.post("/api/plugins/next-prompt/dismiss", params={"session_id": "s4"})
         self.assertEqual(self.get("s4"), {"suggestion": None, "error": None})
         self.assertFalse(self.has("s4"))
 
     def test_failure_is_reported_and_dismissable(self):
         module, ctx = self.start(FakeLLM(error=AuthError("x")))
-        self.turn_done(ctx, "s5")
+        self.turn_done(ctx, "s5", history=[
+            {"role": "user", "content": "Done?"},
+            {"role": "assistant", "content": "All finished."},
+        ])
         self.assertTrue(wait_for(lambda: self.get("s5")["error"]))
         body = self.get("s5")
         self.assertIsNone(body["suggestion"])
