@@ -4,7 +4,13 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
+import { document, mountComposer } from './stubs/dom.mjs'
+import { flushEffects } from './stubs/react.mjs'
 import { calls, host, server } from './stubs/sdk.mjs'
+
+// Node has no DOM: the plugin's `document.activeElement` / selectionchange
+// guards read this stub, which is the same object the tests drive.
+globalThis.document = document
 
 const HERE = new URL('.', import.meta.url)
 export const PLUGIN_SOURCE = readFileSync(new URL('../../desktop/plugin.js', HERE), 'utf8')
@@ -92,6 +98,30 @@ export function view(storedId, busy = false) {
 /** The backend answered GET /suggestion for this session just now. */
 export function serve(storedId, suggestion, error = null) {
   server.set(storedId, { data: { suggestion, error }, dataUpdatedAt: Date.now() + 1, error: null })
+}
+
+/** Render the strip with a composer dock mounted in the page, wiring the
+ *  contribution's ref so InlineSuggestion can find its own composer. Returns
+ *  {tree, editor} — tree is the JSX the contribution returns, editor the real
+ *  (stub) contenteditable the ghost attributes land on. */
+export function mount(ctx, storedId) {
+  const strip = contribution(ctx, 'composer.underside')
+  const { dock, editor } = mountComposer(storedId)
+  document.activeElement = editor
+  const tree = expand(strip.render())
+  const anchor = find(tree, node => node.type === 'style')?.props?.ref
+  if (anchor) anchor.current = dock   // React assigns refs before effects run
+  flushEffects()
+  return { tree, editor, dock }
+}
+
+/** The composer's current DOM state: what ghost text is painted on it, if any. */
+export const ghostOn = editor => editor.getAttribute('data-next-prompt-ghost')
+
+export function resetDom() {
+  document._listeners.clear()
+  document.activeElement = null
+  document.selection = null
 }
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))

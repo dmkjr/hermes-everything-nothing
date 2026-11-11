@@ -2,7 +2,7 @@
 // imports. It proves behaviour, not that the real SDK exports exist; CI greps
 // the imported names separately (see tests/frontend/plugin.test.mjs).
 
-export const calls = { insert: [], clip: [], notify: [], err: [] }
+export const calls = { insert: [], clip: [], notify: [], err: [], insertMode: [] }
 
 const mk = value => {
   let current = value
@@ -28,7 +28,15 @@ export const PALETTE_AREA = 'palette'
 export const host = {
   state: { focusedStoredSessionId: mk(null), busy: mk(false) },
   notify: message => calls.notify.push(message),
-  notifyError: (error, message) => calls.err.push(message)
+  notifyError: (error, message) => calls.err.push(message),
+  // Desktop plugin SDK hook 1: insert into the focused composer without sending.
+  composer: {
+    insertText: async (_surfaceId, text, options) => {
+      calls.insert.push(text)
+      calls.insertMode.push([text, options])
+      return true
+    }
+  }
 }
 
 export const usePluginI18n = () => key => key
