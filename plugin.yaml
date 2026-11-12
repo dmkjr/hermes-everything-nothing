@@ -1,18 +1,42 @@
 name: everything-nothing
-version: "1.0.0"
+version: "1.1.0"
 manifest_version: 2
 api_version: 1
-description: Reusable templates, frontend design briefs, and concise replies for Hermes.
+description: "Reusable templates, frontend design briefs, concise replies, and inline reply suggestions in the Hermes Desktop composer."
 author: dmkjr
 license: MIT
 homepage: https://github.com/dmkjr/hermes-everything-nothing
 requires_hermes: ">=0.23.0"
-tags: [desktop, productivity, templates, design]
-provides_hooks: [pre_llm_call]
+tags: [desktop, productivity, templates, design, composer, suggestions]
+provides_hooks: [pre_llm_call, post_llm_call, post_compaction]
 provides_tools: []
 config_schema:
   response_concision:
     type: string
     default: "Off"
-    choices: ["Off", Light, Terse, Fluff Eater]
+    choices: ["Off", "Light", "Terse", "Fluff Eater"]
     description: "Fluff Eater reply style for interactive Desktop and terminal chats."
+  enabled:
+    type: bool
+    default: true
+    description: "Enable or disable inline composer reply suggestions"
+  max_context_messages:
+    type: int
+    default: 4
+    description: "Context size in messages: your last N/2 requests plus the agent's final reply to each (2-10)"
+  cooldown_seconds:
+    type: int
+    default: 3
+    description: "Minimum seconds between suggestions to avoid spamming"
+  local_fallback:
+    type: bool
+    default: true
+    description: "Offer detected choices or a clarification when the suggestion model fails"
+  offer_follow_up_options:
+    type: bool
+    default: true
+    description: "Offer multiple follow-up questions when Hermes did not offer choices"
+  local_explicit_choices:
+    type: bool
+    default: false
+    description: "Show choices already offered by Hermes without an extra model call"
