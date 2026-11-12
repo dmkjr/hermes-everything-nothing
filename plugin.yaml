@@ -11,6 +11,7 @@ tags: [desktop, productivity, composer, suggestions]
 provides_hooks:
   - pre_llm_call
   - post_llm_call
+  - post_compaction
 provides_tools: []
 config_schema:
   enabled:
