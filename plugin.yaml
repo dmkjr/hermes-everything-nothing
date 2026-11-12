@@ -1,11 +1,11 @@
-name: next-prompt
+name: everything-nothing
 version: 0.5.0
 manifest_version: 2
 api_version: 1
-description: Inline Desktop reply suggestions with safe choice cycling.
-author: soymarketing
+description: "Inline reply suggestions in the Desktop composer: ranked choices, follow-up options, and a reply-style concision setting."
+author: SiteKings
 license: MIT
-homepage: https://github.com/soymarketing/hermes-plugin-next-prompt
+homepage: https://github.com/dmkjr/hermes-everything-nothing
 requires_hermes: ">=0.21"
 tags: [desktop, productivity, composer, suggestions]
 provides_hooks:
