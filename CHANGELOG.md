@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0
+
+- **Everything Nothing: inline ghost-text suggestions.** Instead of a pill
+  below the composer, the suggestion is shown as ghost text inside the empty
+  composer. Press **Right Arrow** to accept it; when there are several
+  follow-up options, press **Option/Alt + Left/Right** to cycle before
+  accepting.
+- **Ranked choices.** When the agent's reply offers an explicit choice, the
+  plugin builds a committed reply per option and asks the model to rank them,
+  storing the top choice plus the alternatives. Model prose can no longer
+  become a draft.
+- **Reply style (Fluff Eater).** Optional `response_concision` (0–3) applies a
+  concision instruction to interactive turns while keeping every material
+  fact, command, and caveat intact.
+- **Compaction stats.** The plugin records Hermes' committed compactions
+  (runs, measured, reclaimed, proactive) for the dashboard.
+- **Offline fallback robustness.** `store.py` falls back to `HERMES_HOME` when
+  the plugin storage helpers are unavailable, so the backend works on bare hosts
+  and in tests.
+
 ## 0.3.2
 
 - **⌘/Ctrl-click the pill to send the suggestion immediately** through
