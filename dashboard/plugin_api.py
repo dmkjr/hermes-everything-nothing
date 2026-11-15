@@ -223,7 +223,9 @@ def test_suggestion(request: SuggestionTest):
     _check_profile(request.profile)
     runtime = _runtime()
     messages = [
-        {"role": "user", "content": "Help me choose a drink for a short break."},
+        # Give the ranker evidence: with no preference, [] is a valid safe
+        # answer and the test misleadingly appears to have gone offline.
+        {"role": "user", "content": "I prefer tea over coffee. Help me choose a drink for a short break."},
         {"role": "assistant", "content": "Would you prefer tea or coffee?"},
     ]
     start = time.perf_counter()
