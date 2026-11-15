@@ -33,6 +33,9 @@ short, conversational questions grounded in recent user requests and final repli
 It can suggest a specific check, example, or next decision without assuming the
 user has performed an action. The parser accepts bounded questions only and
 rejects generic stock questions, completion claims, and malformed output.
+If the model abstains after a substantial reply, one reply-only recovery call
+keeps answer-format restrictions from suppressing draft suggestions. Both calls
+share a four-second time budget; explicit follow-up opt-outs are still respected.
 Questions appear as previews; they are never sent automatically. Quoted choice
 labels remain framed as preferences, including when they describe past actions.
 

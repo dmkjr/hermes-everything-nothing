@@ -326,6 +326,7 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
             {"role": "system", "content": _SYSTEM_PROMPT if choices else _FOLLOW_UP_PROMPT},
             {"role": "user", "content": content},
         ]
+        deadline = time.monotonic() + 4
         result = llm.complete(
             messages=prompt,
             max_tokens=64 if choices else 128,
@@ -338,6 +339,24 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
         outcome["provider"] = getattr(result, "provider", None)
         raw = getattr(result, "text", "")
         ranked = _ranked_candidates(raw, choices) if choices else _generated_followups(raw)
+        # A completed answer can inherit "no questions/choices" formatting
+        # instructions from the transcript. If the model abstains, isolate the
+        # final answer as data once; do not spend beyond the original deadline.
+        remaining = deadline - time.monotonic()
+        if (not choices and ranked == [] and remaining >= 0.25
+                and len(final_reply.strip()) >= 120 and len(final_reply.split()) >= 20):
+            result = llm.complete(
+                messages=[
+                    {"role": "system", "content": _FOLLOW_UP_PROMPT},
+                    {"role": "user", "content": json.dumps(
+                        {"latest_completed_reply": _clip(final_reply)}, ensure_ascii=False)},
+                ],
+                max_tokens=128, temperature=0, timeout=remaining,
+                purpose="next-prompt reply-only recovery", **kwargs,
+            )
+            outcome["model"] = getattr(result, "model", None)
+            outcome["provider"] = getattr(result, "provider", None)
+            ranked = _generated_followups(getattr(result, "text", ""))
         if ranked is None:
             return outcome
         outcome["source"] = "model" if ranked else "none"

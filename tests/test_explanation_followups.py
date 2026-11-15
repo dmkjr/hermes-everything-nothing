@@ -24,7 +24,7 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertEqual(len(options), 3)
         self.assertEqual(options[0], "Can you show me an example?")
         self.assertTrue(all(option.endswith("?") for option in options))
-        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(len(llm.calls), 2)  # one bounded reply-only recovery, then offline fallback
 
     def test_disabling_followups_or_fallback_keeps_abstention_empty(self):
         for key in ("offer_follow_up_options", "local_fallback"):
@@ -88,6 +88,47 @@ class ExplanationFollowupTests(PluginTestCase):
                 module, _ = self.start(FakeLLM(text=json.dumps([question])),
                                        settings={"local_fallback": False})
                 self.assertEqual(module._suggest(HISTORY, module._get_settings())["options"], [])
+
+    def test_empty_ranking_recovers_from_formatted_topic_switch_using_final_reply(self):
+        import json
+        class SequenceLLM(FakeLLM):
+            def complete(self, **kwargs):
+                self.text = '[]' if not self.calls else json.dumps([
+                    "How can I check my dough's gluten strength?",
+                    "What does overproofed sourdough feel like?",
+                ])
+                return super().complete(**kwargs)
+        llm = SequenceLLM()
+        module, ctx = self.start(llm, settings={"local_fallback": False})
+        history = [
+            {"role": "user", "content": "Explain acoustic guitar fret buzz."},
+            {"role": "assistant", "content": "Low action can cause fret buzz."},
+            {"role": "user", "content": "Back to sourdough: explain whether spreading comes from overproofing or weak gluten. Give one practical paragraph, without offering choices or ending with a question. Do not use tools."},
+            {"role": "assistant", "content": "Overproofed sourdough has a fragile structure and can collapse after shaping. Weak gluten fails to hold tension even before fermentation finishes. Check elasticity and the amount of rise to distinguish these causes."},
+        ]
+        self.turn_done(ctx, "formatted", history=history)
+        self.assertTrue(wait_for(lambda: self.has("formatted")))
+        self.assertEqual(self.suggestion("formatted")["text"], "How can I check my dough's gluten strength?")
+        self.assertEqual(len(llm.calls), 2)
+        recovery = llm.calls[1]
+        data = json.loads(recovery["messages"][1]["content"])
+        self.assertEqual(data, {"latest_completed_reply": history[-1]["content"]})
+        self.assertNotIn("guitar", recovery["messages"][1]["content"])
+        self.assertEqual(recovery["task"], "next_prompt")
+        self.assertLessEqual(recovery["timeout"], 4)
+        self.assertGreater(recovery["timeout"], 0)
+
+    def test_explicit_opt_out_and_brief_acknowledgment_never_recover(self):
+        for user, reply, calls in [
+            ("Explain DNS, but do not offer follow-up suggestions.", HISTORY[1]["content"], 0),
+            ("Thanks!", "You're welcome.", 1),
+        ]:
+            llm = FakeLLM(text="[]")
+            module, _ = self.start(llm)
+            result = module._suggest([{"role": "user", "content": user},
+                                      {"role": "assistant", "content": reply}], module._get_settings())
+            self.assertEqual(result["options"], [])
+            self.assertEqual(len(llm.calls), calls)
 
     def test_model_error_preserves_enabled_offline_fallback(self):
         module, _ = self.start(FakeLLM(error=TimeoutError()))
