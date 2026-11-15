@@ -56,6 +56,7 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertIn("TTL", prompt[1]["content"])
         self.assertNotIn("Candidates:", prompt[1]["content"])
         self.assertIn("Never claim", prompt[0]["content"])
+        self.assertIn("aim for 5-10 words", prompt[0]["content"])
 
     def test_single_followup_setting_keeps_the_best_contextual_question(self):
         module, _ = self.start(FakeLLM(text='["How can I inspect a cached DNS TTL?", "Why does a DNS TTL expire?"]'),
@@ -74,6 +75,18 @@ class ExplanationFollowupTests(PluginTestCase):
         for raw in invalid:
             with self.subTest(raw=raw):
                 module, _ = self.start(FakeLLM(text=raw), settings={"local_fallback": False})
+                self.assertEqual(module._suggest(HISTORY, module._get_settings())["options"], [])
+
+    def test_verbose_model_questions_are_rejected_instead_of_truncated(self):
+        import json
+        verbose = [
+            "How does panning at 1/60 s differ in technique from freezing at 1/500 s regarding focus tracking and burst mode usage?",
+            "How can I check the TTL and see if the old IP is still cached?",
+        ]
+        for question in verbose:
+            with self.subTest(question=question):
+                module, _ = self.start(FakeLLM(text=json.dumps([question])),
+                                       settings={"local_fallback": False})
                 self.assertEqual(module._suggest(HISTORY, module._get_settings())["options"], [])
 
     def test_model_error_preserves_enabled_offline_fallback(self):

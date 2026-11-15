@@ -28,7 +28,8 @@ suggestion store, chat history, or model settings.
 The plugin extracts explicit choices from the assistant’s final message.
 It constructs the replies itself and asks the configured model to rank them by
 number. For other turns the configured Next Prompt model writes up to three
-short questions grounded in the recent user requests and final assistant replies.
+short, conversational questions grounded in recent user requests and final replies
+(target 5–10 words; maximum 14 words and 96 characters).
 It can suggest a specific check, example, or next decision without assuming the
 user has performed an action. The parser accepts bounded questions only and
 rejects generic stock questions, completion claims, and malformed output.
