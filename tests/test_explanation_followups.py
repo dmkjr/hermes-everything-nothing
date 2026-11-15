@@ -89,7 +89,7 @@ class ExplanationFollowupTests(PluginTestCase):
                                        settings={"local_fallback": False})
                 self.assertEqual(module._suggest(HISTORY, module._get_settings())["options"], [])
 
-    def test_empty_ranking_recovers_from_formatted_topic_switch_using_final_reply(self):
+    def test_empty_ranking_recovers_from_topic_switch_using_final_reply(self):
         import json
         class SequenceLLM(FakeLLM):
             def complete(self, **kwargs):
@@ -103,7 +103,7 @@ class ExplanationFollowupTests(PluginTestCase):
         history = [
             {"role": "user", "content": "Explain acoustic guitar fret buzz."},
             {"role": "assistant", "content": "Low action can cause fret buzz."},
-            {"role": "user", "content": "Back to sourdough: explain whether spreading comes from overproofing or weak gluten. Give one practical paragraph, without offering choices or ending with a question. Do not use tools."},
+            {"role": "user", "content": "Back to sourdough: explain whether spreading comes from overproofing or weak gluten."},
             {"role": "assistant", "content": "Overproofed sourdough has a fragile structure and can collapse after shaping. Weak gluten fails to hold tension even before fermentation finishes. Check elasticity and the amount of rise to distinguish these causes."},
         ]
         self.turn_done(ctx, "formatted", history=history)
@@ -115,7 +115,7 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertEqual(data, {"latest_completed_reply": history[-1]["content"]})
         self.assertNotIn("guitar", recovery["messages"][1]["content"])
         self.assertEqual(recovery["task"], "next_prompt")
-        self.assertLessEqual(recovery["timeout"], 4)
+        self.assertGreaterEqual(recovery["timeout"], 12)
         self.assertGreater(recovery["timeout"], 0)
 
     def test_explicit_opt_out_and_brief_acknowledgment_never_recover(self):
@@ -129,6 +129,46 @@ class ExplanationFollowupTests(PluginTestCase):
                                       {"role": "assistant", "content": reply}], module._get_settings())
             self.assertEqual(result["options"], [])
             self.assertEqual(len(llm.calls), calls)
+
+    def test_formatted_requests_use_one_reply_only_call_with_queue_wait_allowance(self):
+        import json
+        for instruction in (
+            "Give one practical paragraph, without offering choices or ending with a question.",
+            "Give exactly one paragraph of three sentences, with no bullet points, no choices, and no question at the end.",
+        ):
+            with self.subTest(instruction=instruction):
+                llm = FakeLLM(text='["How can I check drainage in my pothos pot?"]')
+                module, _ = self.start(llm)
+                history = [
+                    {"role": "user", "content": "Explain sourdough spreading."},
+                    {"role": "assistant", "content": HISTORY[1]["content"]},
+                    {"role": "user", "content": "Explain yellow pothos leaves. " + instruction},
+                    {"role": "assistant", "content": "Pothos leaves turn yellow when wet soil leaves roots without oxygen. Check for a drainage hole and let the soil dry before watering again."},
+                ]
+                result = module._suggest(history, module._get_settings())
+                self.assertEqual(result["source"], "model")
+                self.assertEqual(len(llm.calls), 1)
+                data = json.loads(llm.calls[0]["messages"][1]["content"])
+                self.assertEqual(data, {"latest_completed_reply": history[-1]["content"]})
+                self.assertGreaterEqual(llm.calls[0]["timeout"], 12)
+                self.assertLessEqual(llm.calls[0]["timeout"], 20)
+
+    def test_slow_first_call_does_not_starve_recovery(self):
+        from unittest.mock import patch
+        class QueueWaitLLM(FakeLLM):
+            def complete(self, **kwargs):
+                if self.calls and kwargs["timeout"] < 12:
+                    raise TimeoutError("recovery starved after waiting in queue")
+                self.text = "[]" if not self.calls else '["How can I check the remaining DNS TTL?"]'
+                return super().complete(**kwargs)
+        llm = QueueWaitLLM()
+        module, _ = self.start(llm)
+        with patch.object(module.time, "monotonic", side_effect=[100.0, 103.8]):
+            result = module._suggest(HISTORY, module._get_settings())
+        self.assertEqual(result["source"], "model")
+        self.assertIsNone(result["failure"])
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(result["options"], ["How can I check the remaining DNS TTL?"])
 
     def test_model_error_preserves_enabled_offline_fallback(self):
         module, _ = self.start(FakeLLM(error=TimeoutError()))

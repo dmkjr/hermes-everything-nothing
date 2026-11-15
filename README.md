@@ -33,9 +33,12 @@ short, conversational questions grounded in recent user requests and final repli
 It can suggest a specific check, example, or next decision without assuming the
 user has performed an action. The parser accepts bounded questions only and
 rejects generic stock questions, completion claims, and malformed output.
-If the model abstains after a substantial reply, one reply-only recovery call
-keeps answer-format restrictions from suppressing draft suggestions. Both calls
-share a four-second time budget; explicit follow-up opt-outs are still respected.
+Strict reply-format requests generate suggestions directly from the completed
+answer, avoiding an unnecessary model call. Other substantial replies can use
+one reply-only recovery call if the model abstains. Each call allows 15 seconds
+per provider attempt for a busy local queue; Hermes owns transport retries.
+Suggestions run in the background and are discarded if the conversation moves
+on. Explicit follow-up opt-outs are still respected.
 Questions appear as previews; they are never sent automatically. Quoted choice
 labels remain framed as preferences, including when they describe past actions.
 
