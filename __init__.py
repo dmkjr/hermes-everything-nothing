@@ -130,6 +130,25 @@ _FOLLOW_UPS = (
     "How can I verify that?",
     "Can you explain the tradeoffs?",
 )
+_FOLLOW_UP_OPT_OUT = re.compile(
+    r"(?i)\b(?:no\s+(?:more\s+)?follow[- ]?ups?|"
+    r"(?:do not|don't|don’t|never|without|stop)\b[^.!?\n]{0,80}\bfollow[- ]?up)"
+)
+
+
+def _follow_up_fallback(reply: str, settings: dict) -> list[str]:
+    """Safe questions after an explanation, without inventing user actions.
+
+    An empty ranking is not an outage. When extra follow-ups are requested,
+    local fallback can still offer these questions after a substantial answer.
+    Brief acknowledgments do not need a new conversation starter.
+    """
+    if (not settings.get("offer_follow_up_options", True)
+            or len(reply.strip()) < 120 or len(reply.split()) < 20):
+        return []
+    return [_FOLLOW_UPS[2], _FOLLOW_UPS[3], _FOLLOW_UPS[4]]
+
+
 _CHOICE = re.compile(
     r"(?im)(?:^|[.!] +)(?:would you (?:prefer|rather)|do you (?:prefer|want)|"
     r"should (?:I|we)|choose|pick)\s+([^?\n]{1,160})\?"
@@ -233,8 +252,17 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
         "",
     )
     choices = _choice_candidates(final_reply)
+    latest_user = next(
+        (_text_of(msg) for msg in reversed(messages)
+         if isinstance(msg, dict) and msg.get("role") == "user"), "",
+    )
+    if not choices and _FOLLOW_UP_OPT_OUT.search(latest_user):
+        return {"options": [], "source": "none", "model": None, "provider": None, "failure": None}
     candidates = choices or list(_FOLLOW_UPS)
-    fallback = (choices or ([_FOLLOW_UPS[0]] if final_reply.rstrip().endswith("?") else []))
+    fallback = choices or (
+        [_FOLLOW_UPS[0]] if final_reply.rstrip().endswith("?")
+        else _follow_up_fallback(final_reply, settings)
+    )
     outcome = {"options": fallback, "source": "fallback", "model": None, "provider": None, "failure": None}
     if force_fallback:
         return outcome
@@ -269,6 +297,9 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
             outcome["options"] = list(dict.fromkeys(ranked + choices))
             if not ranked:
                 outcome["source"] = "fallback"
+        elif not ranked and fallback and settings["local_fallback"]:
+            outcome["source"] = "fallback"
+            outcome["options"] = fallback
         elif ranked and settings.get("offer_follow_up_options", True):
             outcome["options"] = list(dict.fromkeys(ranked + candidates))[:3]
         else:
