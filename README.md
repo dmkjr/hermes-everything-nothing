@@ -42,7 +42,13 @@ with a stated inability to use Terminal are filtered before publishing. Rejected
 drafts no longer discard good alternatives. Model results are not padded with generic questions. The prompt and output checks
 guard against claims that the user completed an unconfirmed action.
 
-Each call allows 15 seconds per provider attempt; Hermes owns transport retries.
+Each call allows 15 seconds per provider attempt. An unloadable compatibility
+adapter marks only this task's loopback Splash requests as foreground, and avoids
+replaying full-timeout failures. Fast transport blips still use Hermes retries;
+other tasks, cloud routes, credentials, model selection, and explicit priority
+settings stay with Hermes. Hosts without the required policy hooks retain their
+existing behavior and log a warning. The current answer is sent once rather than
+duplicated in recent history; earlier goals and constraints remain available.
 One reply-only recovery call remains available for model abstention. Suggestions
 run in the background and are discarded if the conversation moves on. Drafts are
 previews, never automatic sends or permission to execute. Explicit choices retain

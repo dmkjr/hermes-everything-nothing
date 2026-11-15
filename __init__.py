@@ -313,8 +313,9 @@ def _request_intent(text: str) -> str:
 
 
 def _followup_input(messages: list, max_messages: int, latest_user: str, reply: str) -> str:
-    # Keep a larger slice of the CURRENT answer: the old 1200-character clip
-    # lost the actual plan/decision in the middle of long answers.
+    # Keep the original for exact de-duplication; all unique goal/constraint
+    # information still goes to the model, with the current answer only once.
+    original_reply = reply
     if len(reply) > 4000:
         midpoint = len(reply) // 2
         reply = reply[:1000] + " … " + reply[midpoint-500:midpoint+500] + " … " + reply[-1800:]
@@ -328,11 +329,15 @@ def _followup_input(messages: list, max_messages: int, latest_user: str, reply: 
         for sentence in re.split(r"(?<=[.!?])\s+", request):
             if re.search(r"(?i)\b(?:cannot|can't|can’t|must|keep|preserve|prefer|first|beginner|need|without|do not|don't)\b", sentence):
                 constraints.append(_clip(sentence))
+    recent = _build_context(cleaned, max_messages)
+    current_exchange = f"[User]: {_clip(_request_intent(latest_user))}\n\n[Agent]: {_clip(original_reply)}"
+    if recent.endswith(current_exchange):
+        recent = recent[:-len(current_exchange)].strip()
     return json.dumps({
         "latest_completed_reply": reply,
         "current_user_goal": _clip(_request_intent(latest_user)),
         "user_constraints": list(dict.fromkeys(constraints))[-8:],
-        "recent_exchanges": _build_context(cleaned, max_messages),
+        "recent_exchanges": recent,
     }, ensure_ascii=False)
 
 
@@ -432,6 +437,7 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
 
 
 def _generate_suggestion(session_id: str, seq: int, messages: list, settings: dict) -> None:
+    started = time.monotonic()
     outcome = _suggest(messages, settings)
     ranked, failure = outcome["options"], outcome["failure"]
 
@@ -450,7 +456,8 @@ def _generate_suggestion(session_id: str, seq: int, messages: list, settings: di
         if suggestion is None:
             return
         _last_suggestion_time[session_id] = suggestion["timestamp"]
-    logger.info("next-prompt: stored suggestion for session %s", session_id)
+    logger.info("next-prompt: stored suggestion for session %s source=%s elapsed_ms=%d",
+                session_id, outcome["source"], round((time.monotonic() - started) * 1000))
 
 
 # ── hooks ────────────────────────────────────────────────────────────────
@@ -528,6 +535,18 @@ def register(ctx):
     global _ctx, _llm_task
     _ctx = ctx
     _import_legacy_store(ctx)  # register() runs in the owning profile's home scope
+    if callable(getattr(ctx, "on_unload", None)):
+        try:
+            from .latency import install
+            from agent import auxiliary_client
+            cleanup = install(auxiliary_client)
+            if cleanup is not None:
+                ctx.on_unload(cleanup)
+                logger.info("next-prompt: latency adapter active (local Splash foreground; no full-timeout replay)")
+            else:
+                logger.warning("next-prompt: host has no compatible latency-policy seam; keeping host behavior")
+        except (ImportError, AttributeError, TypeError):
+            logger.warning("next-prompt: could not enable latency adapter; keeping host behavior", exc_info=True)
     # Own auxiliary slot: runs on the main model by default, but the user can
     # point `auxiliary.next_prompt` at a cheaper/faster model.
     try:

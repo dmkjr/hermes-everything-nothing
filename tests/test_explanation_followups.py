@@ -211,6 +211,14 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertEqual(result["source"], "model")
         self.assertEqual(result["options"], ["Create a DNS migration checklist", "Verify TTL in the dashboard"])
 
+    def test_current_answer_is_not_duplicated_in_recent_context(self):
+        import json
+        module, _ = self.start()
+        data = json.loads(module._followup_input(HISTORY, 8, HISTORY[0]["content"], HISTORY[1]["content"]))
+        self.assertEqual(data["latest_completed_reply"], HISTORY[1]["content"])
+        self.assertNotIn(HISTORY[1]["content"], data["recent_exchanges"])
+        self.assertEqual(data["current_user_goal"], HISTORY[0]["content"])
+
     def test_model_error_preserves_enabled_offline_fallback(self):
         module, _ = self.start(FakeLLM(error=TimeoutError()))
         result = module._suggest(HISTORY, module._get_settings())
