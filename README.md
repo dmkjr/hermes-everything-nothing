@@ -27,13 +27,17 @@ suggestion store, chat history, or model settings.
 
 The plugin extracts explicit choices from the assistant’s final message.
 It constructs the replies itself and asks the configured model to rank them by
-number. For other turns the model selects from a short list of follow-up
-questions, or returns no suggestion. Model-generated prose cannot become a
-draft. Quoted choice labels are framed as preferences, including when they
-describe past actions.
+number. For other turns the configured Next Prompt model writes up to three
+short questions grounded in the recent user requests and final assistant replies.
+It can suggest a specific check, example, or next decision without assuming the
+user has performed an action. The parser accepts bounded questions only and
+rejects generic stock questions, completion claims, and malformed output.
+Questions appear as previews; they are never sent automatically. Quoted choice
+labels remain framed as preferences, including when they describe past actions.
 
 The dependency-free local fallback offers detected choices in their original
-order or a clarification for a question if the model call fails. It runs on
+order, a clarification for a question, or safe generic questions after a
+substantial explanation if the model fails or cannot supply useful questions. It runs on
 the Hermes backend and needs no model weights, network, or separate process.
 Set `plugins.entries.next-prompt.settings.local_fallback` to false to disable
 the fallback on model failure. Choice detection and follow-up templates are
@@ -71,7 +75,7 @@ local integration may need adjustment if Hermes changes its composer markup.
 ## Development
 
 ```sh
-python -m unittest discover -s tests -p 'test_backend.py'
+python -m unittest discover -s tests
 node --test tests/frontend/plugin.test.mjs
 ```
 
