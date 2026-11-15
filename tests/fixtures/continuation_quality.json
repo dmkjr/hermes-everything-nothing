@@ -1,0 +1,20 @@
+[
+  {"name":"dns_gui_migration", "messages":[
+    {"role":"user","content":"I need to move our website to a new IP tomorrow without downtime. The current DNS TTL is 24 hours. I cannot use Terminal; I use the DNS provider's web dashboard."},
+    {"role":"assistant","content":"Lower the TTL today, wait out the original 24 hours, change the IP tomorrow, and keep the old server available during the transition."},
+    {"role":"user","content":"Explain why lowering TTL now does not clear old cached IPs. Give exactly one paragraph of three sentences, with no choices and no question at the end."},
+    {"role":"assistant","content":"A resolver that cached the old IP with a 24-hour TTL keeps it for the original lifetime; a later TTL change cannot shorten that cached copy. Lowering the authoritative TTL today only affects future lookups, so wait the old TTL before changing the IP tomorrow. Keeping both servers available during that overlap avoids downtime while caches expire."}
+  ]},
+  {"name":"sourdough_beginner", "messages":[
+    {"role":"user","content":"This is my first sourdough loaf. It is 70% hydration and my kitchen is 21 C. Help me decide when it is ready to shape."},
+    {"role":"assistant","content":"Look at dough strength and fermentation progress together, rather than relying on a fixed schedule."},
+    {"role":"user","content":"Explain how stretch-and-folds build gluten. Give one practical paragraph, without offering choices or ending with a question."},
+    {"role":"assistant","content":"Stretch-and-folds align hydrated gluten strands and help dough hold the gas from fermentation. Stop adding folds when the dough holds a rounded shape and a small piece stretches into a thin translucent windowpane without tearing. Strength alone does not establish readiness to shape: also look for a visibly aerated dough with bubbles and an increase in volume."}
+  ]},
+  {"name":"finish_update_fix", "messages":[
+    {"role":"user","content":"Everything Nothing settings broke after a plugin update. Fix this durably and preserve my custom theme and unsent draft."},
+    {"role":"assistant","content":"The renamed internal plugin ID broke the existing settings route. I restored the stable ID, committed the change to the fork, and preserved the standalone desktop override."},
+    {"role":"user","content":"What remains before we can call this fixed?"},
+    {"role":"assistant","content":"The code is pushed and all 52 backend tests pass. The updated desktop backend still needs to be activated, then the settings page must load in Hermes and retain the saved custom theme. We have not verified that a subsequent plugin update preserves those settings or the unsent draft."}
+  ]}
+]

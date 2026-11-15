@@ -22,7 +22,7 @@ config_schema:
     description: "Enable or disable next-prompt suggestions"
   max_context_messages:
     type: int
-    default: 4
+    default: 8
     description: "Context size in messages: your last N/2 requests plus the agent's final reply to each (2-10)"
   cooldown_seconds:
     type: int

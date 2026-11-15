@@ -27,20 +27,26 @@ suggestion store, chat history, or model settings.
 
 The plugin extracts explicit choices from the assistant’s final message.
 It constructs the replies itself and asks the configured model to rank them by
-number. For other turns the configured Next Prompt model writes up to three
-short, conversational questions grounded in recent user requests and final replies
-(target 5–10 words; maximum 14 words and 96 characters).
-It can suggest a specific check, example, or next decision without assuming the
-user has performed an action. The parser accepts bounded questions only and
-rejects generic stock questions, completion claims, and malformed output.
-Strict reply-format requests generate suggestions directly from the completed
-answer, avoiding an unnecessary model call. Other substantial replies can use
-one reply-only recovery call if the model abstains. Each call allows 15 seconds
-per provider attempt for a busy local queue; Hermes owns transport retries.
-Suggestions run in the background and are discarded if the conversation moves
-on. Explicit follow-up opt-outs are still respected.
-Questions appear as previews; they are never sent automatically. Quoted choice
-labels remain framed as preferences, including when they describe past actions.
+number. For other turns the configured Next Prompt model proposes the next useful
+step toward the user's goal, using the current request, stated constraints,
+recent exchanges, and a larger slice of the completed reply. The default context
+is eight messages (four exchanges); an explicit saved context limit is preserved.
+Suggestions can be short questions or requests such as “Make a migration checklist”.
+They target 5–10 words and stay within 96 characters (18 words maximum).
+
+The model prioritizes unfinished work, blockers, decisions, and relevant checks,
+rather than asking for facts already explained. Standalone reply-format directives
+are removed from the intent view so “no closing question” does not hide the user's
+goal. Explicit requests to disable suggestions are still respected. Clear conflicts
+with a stated inability to use Terminal are filtered before publishing. Rejected
+drafts no longer discard good alternatives. Model results are not padded with generic questions. The prompt and output checks
+guard against claims that the user completed an unconfirmed action.
+
+Each call allows 15 seconds per provider attempt; Hermes owns transport retries.
+One reply-only recovery call remains available for model abstention. Suggestions
+run in the background and are discarded if the conversation moves on. Drafts are
+previews, never automatic sends or permission to execute. Explicit choices retain
+the existing quoted-choice ranking behavior.
 
 The dependency-free local fallback offers detected choices in their original
 order, a clarification for a question, or safe generic questions after a

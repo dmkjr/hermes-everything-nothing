@@ -81,7 +81,7 @@ class ExplanationFollowupTests(PluginTestCase):
         import json
         verbose = [
             "How does panning at 1/60 s differ in technique from freezing at 1/500 s regarding focus tracking and burst mode usage?",
-            "How can I check the TTL and see if the old IP is still cached?",
+            "How can I see if the old IP is still in a DNS cache on my own Mac right now?",
         ]
         for question in verbose:
             with self.subTest(question=question):
@@ -130,7 +130,7 @@ class ExplanationFollowupTests(PluginTestCase):
             self.assertEqual(result["options"], [])
             self.assertEqual(len(llm.calls), calls)
 
-    def test_formatted_requests_use_one_reply_only_call_with_queue_wait_allowance(self):
+    def test_formatted_requests_keep_user_goal_without_reply_format_restrictions(self):
         import json
         for instruction in (
             "Give one practical paragraph, without offering choices or ending with a question.",
@@ -149,7 +149,9 @@ class ExplanationFollowupTests(PluginTestCase):
                 self.assertEqual(result["source"], "model")
                 self.assertEqual(len(llm.calls), 1)
                 data = json.loads(llm.calls[0]["messages"][1]["content"])
-                self.assertEqual(data, {"latest_completed_reply": history[-1]["content"]})
+                self.assertEqual(data["latest_completed_reply"], history[-1]["content"])
+                self.assertEqual(data["current_user_goal"], "Explain yellow pothos leaves.")
+                self.assertNotIn("no choices", data["recent_exchanges"])
                 self.assertGreaterEqual(llm.calls[0]["timeout"], 12)
                 self.assertLessEqual(llm.calls[0]["timeout"], 20)
 
@@ -169,6 +171,45 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertIsNone(result["failure"])
         self.assertEqual(len(llm.calls), 2)
         self.assertEqual(result["options"], ["How can I check the remaining DNS TTL?"])
+
+    def test_useful_next_step_requests_can_be_stored_without_completion_claims(self):
+        llm = FakeLLM(text='["Walk me through checking my dough strength", "Make a sourdough folding checklist"]')
+        module, ctx = self.start(llm)
+        self.turn_done(ctx, "actions", history=HISTORY)
+        self.assertTrue(wait_for(lambda: self.has("actions")))
+        self.assertEqual(self.suggestion("actions")["text"], "Walk me through checking my dough strength")
+        for raw in ('["I have finished the migration"]', '["Make changes and deploy to production"]'):
+            self.assertIsNone(module._generated_followups(raw))
+
+    def test_structured_context_retains_earlier_constraints_and_middle_of_current_reply(self):
+        import json
+        module, _ = self.start()
+        history = [
+            {"role": "user", "content": "I cannot use Terminal. I need a DNS migration checklist for tomorrow."},
+            {"role": "assistant", "content": "We can use your DNS dashboard."},
+            {"role": "user", "content": "Explain why the old TTL matters. Give one paragraph, no choices."},
+            {"role": "assistant", "content": "a" * 1400 + " Keep the old server alive during the DNS transition. " + "b" * 1400},
+        ]
+        data = json.loads(module._followup_input(history, 8, history[-2]["content"], history[-1]["content"]))
+        self.assertIn("cannot use Terminal", data["recent_exchanges"])
+        self.assertIn("Keep the old server alive", data["latest_completed_reply"])
+        self.assertEqual(data["current_user_goal"], "Explain why the old TTL matters.")
+        self.assertEqual(module._request_intent("Write one paragraph about sourdough."),
+                         "Write one paragraph about sourdough.")
+
+    def test_rejected_draft_does_not_discard_good_next_steps(self):
+        module, _ = self.start()
+        self.assertEqual(module._generated_followups(
+            '["I deployed the changes", "Make a DNS migration checklist", "How can I verify that?"]'),
+            ["Make a DNS migration checklist"])
+
+    def test_cli_conflict_is_removed_while_gui_steps_survive(self):
+        llm = FakeLLM(text='["Create a DNS migration checklist", "Explain cache expiry via dig", "Verify TTL in the dashboard"]')
+        module, _ = self.start(llm)
+        history = [{"role": "user", "content": "I cannot use Terminal. Help me migrate DNS tomorrow."}, HISTORY[1]]
+        result = module._suggest(history, module._get_settings())
+        self.assertEqual(result["source"], "model")
+        self.assertEqual(result["options"], ["Create a DNS migration checklist", "Verify TTL in the dashboard"])
 
     def test_model_error_preserves_enabled_offline_fallback(self):
         module, _ = self.start(FakeLLM(error=TimeoutError()))
