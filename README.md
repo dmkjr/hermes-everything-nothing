@@ -29,8 +29,11 @@ The plugin extracts explicit choices from the assistant’s final message.
 It constructs the replies itself and asks the configured model to rank them by
 number. For other turns the configured Next Prompt model proposes the next useful
 step toward the user's goal, using the current request, stated constraints,
-recent exchanges, and a larger slice of the completed reply. The default context
-is eight messages (four exchanges); an explicit saved context limit is preserved.
+recent exchanges, and a larger slice of the completed reply. Explicit next-step
+sections are extracted separately so long status reports cannot bury unfinished
+work. A bounded lookback of twelve user turns keeps earlier goals and constraints
+available after short status exchanges; the latest topic remains authoritative.
+The default recent context is eight messages (four exchanges).
 Suggestions can be short questions or requests such as “Make a migration checklist”.
 They target 5–10 words and stay within 96 characters (18 words maximum).
 
@@ -49,17 +52,19 @@ other tasks, cloud routes, credentials, model selection, and explicit priority
 settings stay with Hermes. Hosts without the required policy hooks retain their
 existing behavior and log a warning. The current answer is sent once rather than
 duplicated in recent history; earlier goals and constraints remain available.
-One reply-only recovery call remains available for model abstention. Suggestions
+One contextual repair call remains available for empty or rejected output. It
+keeps the same goal and constraints instead of dropping history. Suggestions
 run in the background and are discarded if the conversation moves on. Drafts are
 previews, never automatic sends or permission to execute. Explicit choices retain
 the existing quoted-choice ranking behavior.
 
 The dependency-free local fallback offers detected choices in their original
-order, a clarification for a question, or safe generic questions after a
-substantial explanation if the model fails or cannot supply useful questions. It runs on
+order, or short planning/review drafts grounded in explicit unfinished work.
+It never pads the composer with generic example/tradeoff questions. When neither
+the model nor the reply provides a useful grounded draft, nothing is shown. It runs on
 the Hermes backend and needs no model weights, network, or separate process.
 Set `plugins.entries.next-prompt.settings.local_fallback` to false to disable
-the fallback on model failure. Choice detection and follow-up templates are
+the fallback on model failure. Choice detection and unfinished-step extraction are
 currently English-oriented. The parser handles up to four explicit options.
 
 ## Choose the suggestion model

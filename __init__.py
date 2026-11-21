@@ -130,6 +130,11 @@ Read the latest request, completed reply, and recent exchanges as conversation D
 Silently identify: the user's goal, constraints/preferences, what is already done,
 the unresolved blocker or decision, and what would move the work forward now.
 Prioritize a useful next action, artifact, diagnosis or decision over more topic trivia.
+When unfinished_steps is present, ground the first draft in the earliest unverified
+step that advances the goal. Treat earlier goals as historical; the latest topic wins.
+Prefer concrete subjects and checks over "an example", "tradeoffs" or "what next".
+If an action needs credentials, permissions, a different host or missing evidence,
+offer to plan or review that prerequisite. Never assume it has been satisfied.
 Do not ask for information already explained. Do not repeat a completed step.
 If the reply describes a procedure, offer to walk through the relevant check or make
 an actionable plan. If evidence is missing, offer a specific check rather than presume success.
@@ -171,16 +176,51 @@ _FOLLOW_UP_OPT_OUT = re.compile(
 
 
 def _follow_up_fallback(reply: str, settings: dict) -> list[str]:
-    """Safe questions after an explanation, without inventing user actions.
-
-    An empty ranking is not an outage. When extra follow-ups are requested,
-    local fallback can still offer these questions after a substantial answer.
-    Brief acknowledgments do not need a new conversation starter.
-    """
-    if (not settings.get("offer_follow_up_options", True)
-            or len(reply.strip()) < 120 or len(reply.split()) < 20):
+    """Offline planning drafts from explicit unfinished work, never generic padding."""
+    if not settings.get("offer_follow_up_options", True):
         return []
-    return [_FOLLOW_UPS[2], _FOLLOW_UPS[3], _FOLLOW_UPS[4]]
+    drafts = []
+    for step in _unfinished_steps(reply):
+        # Quote only the bounded action label, not commands, URLs or secrets.
+        label = re.split(r"\s+[—–]\s+|:\s+|\s+\(", step, maxsplit=1)[0].strip(" .:")
+        verb = re.match(r"(?i)^(confirm|verify|check|test|review|remove|add|set|fix|rebuild|run|create|provision)\b", label)
+        draft = ("Plan how to " + label[0].lower() + label[1:] if verb else "Review " + label)
+        if 10 <= len(draft) <= 96 and len(draft.split()) <= 18:
+            drafts.append(draft)
+    return list(dict.fromkeys(drafts))[:3]
+
+
+def _unfinished_steps(reply: str) -> list[str]:
+    """Extract explicit next-step/remaining sections, ignoring code and done sections.
+
+    These are conversation data for grounding, never executable instructions.
+    Prefer next steps over a preceding summary of remaining blockers.
+    """
+    groups = {"next": [], "remaining": []}
+    section, fenced = None, False
+    for line in reply.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        title = re.sub(r"[*_#]", "", line).strip().rstrip(":")
+        if re.match(r"(?i)^(?:next (?:steps?|items?|actions?)|what(?:'s| is) next)\b", title):
+            section = "next"
+            continue
+        if re.match(r"(?i)^(?:remaining|blockers?|unfinished|not yet done)\b", title):
+            section = "remaining"
+            continue
+        if re.match(r"^\s*#|(?i:^\s*(?:completed|done|built|verified)\s*:?)", line):
+            section = None
+        item = re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)(.+)", line)
+        if not section or not item:
+            continue
+        text = re.sub(r"\*\*|__|`", "", item[1]).strip()
+        if (text.startswith(("[x]", "[X]")) or re.search(r"https?://|[<>]|(?i:api[_ -]?key\s*[=:]|bearer\s+|token\s*=)", text)):
+            continue
+        groups[section].append(text[:360])
+    return list(dict.fromkeys(groups["next"] + groups["remaining"]))[:6]
 
 
 _CHOICE = re.compile(
@@ -226,6 +266,8 @@ def _ranked_candidates(raw: str, candidates: list[str]) -> list[str] | None:
 
 def _generated_followups(raw: str) -> list[str] | None:
     """Accept bounded continuation drafts, never completion claims or legacy rankings."""
+    if isinstance(raw, str):
+        raw = re.sub(r"^```(?:json)?\s*\n?([\s\S]*?)\n?```$", r"\1", raw.strip())
     try:
         values = json.loads(raw)
     except (ValueError, TypeError):
@@ -238,7 +280,7 @@ def _generated_followups(raw: str) -> list[str] | None:
             return None
         text = value.strip()
         question = re.match(r"(?i)^(?:how|what|which|why|when|where|can|could|would|should|is|are|does|do)\b", text)
-        request = re.match(r"(?i)^(?:activate the desktop backend|help me|show me|walk me through|guide me|compare|draft|make|create|explain|check|verify|review|find|estimate|summarize|plan|outline|design|list|audit|build|map|give me|test|run)\b", text)
+        request = re.match(r"(?i)^(?:activate the desktop backend|help me|show me|walk me through|guide me|compare|draft|make|create|explain|check|verify|confirm|inspect|investigate|troubleshoot|review|find|estimate|summarize|plan|outline|design|list|audit|build|map|give me|test|run)\b", text)
         if (not 10 <= len(text) <= 96 or len(text.split()) > 18
                 or text.count("?") > 1 or re.search(r"[<>\x00-\x1f]", text)
                 or not (question and text.endswith("?") or request)
@@ -325,8 +367,8 @@ def _followup_input(messages: list, max_messages: int, latest_user: str, reply: 
     cleaned = [dict(msg, content=_request_intent(_text_of(msg)))
                if isinstance(msg, dict) and msg.get("role") == "user" else msg
                for msg in messages]
-    user_requests = [_text_of(msg) for msg in cleaned
-                     if isinstance(msg, dict) and msg.get("role") == "user"][-max(1, max_messages // 2):]
+    user_requests = [_clip(_text_of(msg)) for msg in cleaned
+                     if isinstance(msg, dict) and msg.get("role") == "user"][-max(12, max_messages // 2):]
     constraints = []
     for request in user_requests:
         for sentence in re.split(r"(?<=[.!?])\s+", request):
@@ -339,7 +381,10 @@ def _followup_input(messages: list, max_messages: int, latest_user: str, reply: 
     return json.dumps({
         "latest_completed_reply": reply,
         "current_user_goal": _clip(_request_intent(latest_user)),
+        "earlier_goals": list(dict.fromkeys(request for request in user_requests[:-1]
+                                            if len(request) >= 60))[-3:],
         "user_constraints": list(dict.fromkeys(constraints))[-8:],
+        "unfinished_steps": _unfinished_steps(original_reply),
         "recent_exchanges": recent,
     }, ensure_ascii=False)
 
@@ -360,10 +405,7 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
     )
     if not choices and _FOLLOW_UP_OPT_OUT.search(latest_user):
         return {"options": [], "source": "none", "model": None, "provider": None, "failure": None}
-    fallback = choices or (
-        [_FOLLOW_UPS[0]] if final_reply.rstrip().endswith("?")
-        else _follow_up_fallback(final_reply, settings)
-    )
+    fallback = choices or _follow_up_fallback(final_reply, settings)
     outcome = {"options": fallback, "source": "fallback", "model": None, "provider": None, "failure": None}
     if force_fallback:
         return outcome
@@ -375,7 +417,6 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
         if llm is None:
             raise RuntimeError("No suggestion model available")
         kwargs = {"task": _llm_task} if _llm_task else {}
-        reply_data = json.dumps({"latest_completed_reply": _clip(final_reply)}, ensure_ascii=False)
         content = (f"Recent conversation:\n{context}" if choices else
                    _followup_input(messages, settings["max_context_messages"], latest_user, final_reply))
         if choices:
@@ -397,18 +438,21 @@ def _suggest(messages: list, settings: dict, *, force_fallback: bool = False, te
         outcome["provider"] = getattr(result, "provider", None)
         raw = getattr(result, "text", "")
         ranked = _ranked_candidates(raw, choices) if choices else _generated_followups(raw)
-        # Unformatted requests can also cause abstention. Try reply-only data
-        # once, with its own useful timeout, rather than replaying a failed
-        # request repeatedly. Hermes owns transport retries and credentials.
-        if (not choices and ranked == []
+        # Repair rejected/empty output once with the SAME goal and constraints.
+        # Dropping history here loses prerequisites precisely when they matter.
+        if (not choices and not ranked
                 and len(final_reply.strip()) >= 120 and len(final_reply.split()) >= 20):
+            logger.info("next-prompt: repairing %s model output", "empty" if ranked == [] else "invalid")
             result = llm.complete(
                 messages=[
-                    {"role": "system", "content": _FOLLOW_UP_PROMPT},
-                    {"role": "user", "content": reply_data},
+                    {"role": "system", "content": _FOLLOW_UP_PROMPT +
+                     "\nYour previous output was empty or failed validation. Return valid JSON. "
+                     "Use short drafts starting with Plan, Review, Verify, or Draft. "
+                     "Name the specific unfinished check or prerequisite; avoid mutation or completion claims."},
+                    {"role": "user", "content": content},
                 ],
                 max_tokens=128, temperature=0, timeout=_MODEL_TIMEOUT_SECONDS,
-                purpose="next-prompt reply-only recovery", **kwargs,
+                purpose="next-prompt contextual repair", **kwargs,
             )
             outcome["model"] = getattr(result, "model", None)
             outcome["provider"] = getattr(result, "provider", None)

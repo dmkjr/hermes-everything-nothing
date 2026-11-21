@@ -14,17 +14,12 @@ HISTORY = [
 
 
 class ExplanationFollowupTests(PluginTestCase):
-    def test_abstaining_model_still_offers_safe_enabled_followups(self):
+    def test_abstaining_model_does_not_pad_explanations_with_generic_questions(self):
         llm = FakeLLM(text="[]")
         module, ctx = self.start(llm)
-        self.turn_done(ctx, "explanation", history=HISTORY)
-        self.assertTrue(wait_for(lambda: self.has("explanation")))
-        suggestion = self.suggestion("explanation")
-        options = [suggestion["text"], *suggestion["alternatives"]]
-        self.assertEqual(len(options), 3)
-        self.assertEqual(options[0], "Can you show me an example?")
-        self.assertTrue(all(option.endswith("?") for option in options))
-        self.assertEqual(len(llm.calls), 2)  # one bounded reply-only recovery, then offline fallback
+        result = module._suggest(HISTORY, module._get_settings())
+        self.assertEqual(result["options"], [])
+        self.assertEqual(len(llm.calls), 2)  # one bounded contextual repair, no generic padding
 
     def test_disabling_followups_or_fallback_keeps_abstention_empty(self):
         for key in ("offer_follow_up_options", "local_fallback"):
@@ -112,8 +107,9 @@ class ExplanationFollowupTests(PluginTestCase):
         self.assertEqual(len(llm.calls), 2)
         recovery = llm.calls[1]
         data = json.loads(recovery["messages"][1]["content"])
-        self.assertEqual(data, {"latest_completed_reply": history[-1]["content"]})
-        self.assertNotIn("guitar", recovery["messages"][1]["content"])
+        self.assertEqual(data["latest_completed_reply"], history[-1]["content"])
+        self.assertIn("Back to sourdough", data["current_user_goal"])
+        self.assertEqual(recovery["messages"][1]["content"], llm.calls[0]["messages"][1]["content"])
         self.assertEqual(recovery["task"], "next_prompt")
         self.assertGreaterEqual(recovery["timeout"], 12)
         self.assertGreater(recovery["timeout"], 0)
@@ -221,7 +217,9 @@ class ExplanationFollowupTests(PluginTestCase):
 
     def test_model_error_preserves_enabled_offline_fallback(self):
         module, _ = self.start(FakeLLM(error=TimeoutError()))
-        result = module._suggest(HISTORY, module._get_settings())
+        history = [HISTORY[0], {"role": "assistant", "content":
+                   "## Next steps\n1. Check the DNS TTL in the dashboard — keep the old server active."}]
+        result = module._suggest(history, module._get_settings())
         self.assertEqual(result["source"], "fallback")
         self.assertEqual(result["failure"], "timeout")
-        self.assertEqual(len(result["options"]), 3)
+        self.assertEqual(result["options"], ["Plan how to check the DNS TTL in the dashboard"])
